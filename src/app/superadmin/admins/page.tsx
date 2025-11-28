@@ -10,6 +10,8 @@ import {
   listAdminsForRestaurant,
   listBranches,
   resetAdminPassword,
+  updateAdmin,
+  updateBranch,
 } from '@/lib/api/superadmin';
 import type { Branch, UserRecord } from '@/types/entities';
 
@@ -214,7 +216,110 @@ export default function SuperadminAdminsPage() {
 
   const handleAssign = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!assigningAdmin || !assignBranchId) return;
+    if (!assigningAdmin) return;
+    
+    // Handle unassign case
+    if (assignBranchId === 'unassign') {
+      setAssignSubmitting(true);
+      setState((prev) => ({ ...prev, error: null }));
+      try {
+        console.log('[SuperadminAdmins] Attempting to unassign admin:', {
+          email: assigningAdmin.email,
+          currentBranchId: assigningAdmin.branchId,
+        });
+        
+        // If admin is assigned to a branch, also update the branch to remove adminUserId
+        if (assigningAdmin.branchId) {
+          const branch = branchOptions.get(assigningAdmin.branchId);
+          if (branch) {
+            console.log('[SuperadminAdmins] Also updating branch to remove adminUserId:', branch.id);
+            try {
+              await updateBranch(api, branch.id, { adminUserId: null });
+              console.log('[SuperadminAdmins] Branch updated successfully');
+            } catch (branchError: any) {
+              console.warn('[SuperadminAdmins] Failed to update branch, continuing with user update:', branchError);
+            }
+          }
+        }
+        
+        // Update the admin's branchId to null
+        // Try superadmin endpoint first
+        try {
+          const { data } = await api.put<UserRecord>(`/superadmin/users/${encodeURIComponent(assigningAdmin.email.toLowerCase())}`, {
+            branchId: null,
+          });
+          console.log('[SuperadminAdmins] Unassign response (superadmin endpoint):', data);
+          
+          setState((prev) => ({
+            ...prev,
+            admins: prev.admins.map((admin) =>
+              admin.email === assigningAdmin.email ? { ...admin, branchId: null } : admin
+            ),
+          }));
+          resetAssignForm();
+          return;
+        } catch (superadminError: any) {
+          console.warn('[SuperadminAdmins] Superadmin endpoint failed, trying general endpoint:', {
+            message: superadminError?.message,
+            response: superadminError?.response?.data,
+            status: superadminError?.response?.status,
+          });
+          
+          // Fallback: try omitting branchId entirely (some backends require omitting optional fields to clear them)
+          try {
+            await updateAdmin(api, assigningAdmin.email, { branchId: null });
+            console.log('[SuperadminAdmins] Unassign successful via general endpoint');
+          } catch (generalError: any) {
+            console.error('[SuperadminAdmins] General endpoint also failed:', {
+              message: generalError?.message,
+              response: generalError?.response?.data,
+              status: generalError?.response?.status,
+            });
+            throw generalError; // Re-throw to be caught by outer catch
+          }
+          
+          setState((prev) => ({
+            ...prev,
+            admins: prev.admins.map((admin) =>
+              admin.email === assigningAdmin.email ? { ...admin, branchId: null } : admin
+            ),
+          }));
+          resetAssignForm();
+        }
+        
+      } catch (error: any) {
+        console.error('[SuperadminAdmins] unassign error', error);
+        console.error('[SuperadminAdmins] Full error details:', {
+          message: error?.message,
+          response: error?.response?.data,
+          status: error?.response?.status,
+          statusText: error?.response?.statusText,
+        });
+        
+        // Extract detailed error message
+        let errorMessage = 'Failed to unassign branch.';
+        if (error?.response?.data?.message) {
+          errorMessage = error.response.data.message;
+        } else if (error?.response?.data?.error) {
+          errorMessage = error.response.data.error;
+        } else if (error?.message) {
+          errorMessage = error.message;
+        }
+        
+        // Add backend status code if available
+        if (error?.response?.status) {
+          errorMessage += ` (Status: ${error.response.status})`;
+        }
+        
+        setState((prev) => ({ ...prev, error: errorMessage }));
+      } finally {
+        setAssignSubmitting(false);
+      }
+      return;
+    }
+    
+    // Handle assign case
+    if (!assignBranchId) return;
     setAssignSubmitting(true);
     setState((prev) => ({ ...prev, error: null }));
     try {
@@ -457,7 +562,13 @@ export default function SuperadminAdminsPage() {
       </Modal>
 
       <Modal
-        title={assigningAdmin ? `Assign branch to ${assigningAdmin.email}` : 'Assign branch'}
+        title={
+          assigningAdmin
+            ? assignBranchId === 'unassign'
+              ? `Unassign branch from ${assigningAdmin.email}`
+              : `Assign branch to ${assigningAdmin.email}`
+            : 'Assign branch'
+        }
         open={Boolean(assigningAdmin)}
         onClose={() => {
           if (!assignSubmitting) resetAssignForm();
@@ -479,6 +590,9 @@ export default function SuperadminAdminsPage() {
               <option value="" disabled>
                 Choose branch
               </option>
+              <option value="unassign">
+                Unassign
+              </option>
               {state.branches.map((branch) => (
                 <option key={branch.id} value={branch.id}>
                   {branch.name}
@@ -499,10 +613,16 @@ export default function SuperadminAdminsPage() {
             </button>
             <button
               type="submit"
-              disabled={assignSubmitting}
+              disabled={assignSubmitting || !assignBranchId}
               className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
             >
-              {assignSubmitting ? 'Assigning…' : 'Assign branch'}
+              {assignSubmitting
+                ? assignBranchId === 'unassign'
+                  ? 'Unassigning…'
+                  : 'Assigning…'
+                : assignBranchId === 'unassign'
+                ? 'Unassign'
+                : 'Assign branch'}
             </button>
           </div>
         </form>

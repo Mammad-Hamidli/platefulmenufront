@@ -109,8 +109,10 @@ POST /api/users
 - `role` (String, **REQUIRED**, `@NotBlank`) - ROLE_SUPERADMIN, ROLE_ADMIN, ROLE_WAITER, ROLE_KITCHEN, ROLE_CASHIER, etc.
 - `restaurantId` (Long, **REQUIRED**, `@NotNull`) - Restaurant ID
 - `branchId` (Long, **OPTIONAL**) - Required for ADMIN, WAITER, KITCHEN (null for SUPERADMIN)
+- `fullName` (String, **OPTIONAL**) - Display name for staff/admin
+- `firstName` / `lastName` (String, **OPTIONAL**) - Provide if you prefer structured names. When both are present, `fullName` is derived automatically.
 - `phoneNumber` (String, **OPTIONAL**) - Required for staff members
-- `salaryAmount` (BigDecimal, **OPTIONAL**, `@Positive`) - Required for staff members
+- `salaryAmount` (Double, **OPTIONAL**, `@Positive`) - Required for staff members
 - `salaryPeriod` (SalaryPeriod, **OPTIONAL**) - DAILY, WEEKLY, or MONTHLY - Required for staff members
 
 **PATH VARIABLES:** None
@@ -165,6 +167,7 @@ PATCH /api/users/{email}
   "role": "ROLE_ADMIN",
   "restaurantId": 1,
   "branchId": 5,
+  "fullName": "John Doe",
   "phoneNumber": "+1234567890",
   "salaryAmount": 1200.00,
   "salaryPeriod": "MONTHLY"
@@ -176,9 +179,17 @@ PATCH /api/users/{email}
 - `role` (String, **OPTIONAL**) - Role update (restricted by requester role)
 - `restaurantId` (Long, **OPTIONAL**) - Restaurant ID (restricted by role)
 - `branchId` (Long, **OPTIONAL**) - Branch ID (restricted by role)
-- `phoneNumber` (String, **OPTIONAL**) - Can be updated for staff members
-- `salaryAmount` (BigDecimal, **OPTIONAL**, `@Positive`) - Can be updated for staff members
+- `fullName` (String, **OPTIONAL**) - Set/override display name
+- `firstName` / `lastName` (String, **OPTIONAL**) - Structured name fields; server derives `fullName` when both provided
+- `phoneNumber` (String, **OPTIONAL**) - Can be updated for staff members (`phone` is returned as an alias)
+- `salaryAmount` (Double, **OPTIONAL**, `@Positive`) - Can be updated for staff members
 - `salaryPeriod` (SalaryPeriod, **OPTIONAL**) - Can be updated for staff members
+
+**Authorization**
+- `ROLE_SUPERADMIN` can update any staff/admin in their restaurant (including role/branch changes) but cannot move superadmins between restaurants.
+- `ROLE_ADMIN` can update only staff members within their own branch and may edit name/phone/salary fields; they cannot change branchId, restaurantId, or promote staff to admin roles.
+
+**Response:** Returns the updated `UserDTO`, including `fullName`, `firstName`, `lastName`, `phoneNumber`, and its alias `phone`, along with salary and assignment metadata.
 
 **PATH VARIABLES:**
 - `email` (String) - User email (URL encoded)
@@ -561,8 +572,8 @@ POST /api/superadmin/analytics/query
 {
   "restaurantId": 1,
   "branchId": 5,
-  "fromDate": "2025-01-01",
-  "toDate": "2025-12-31",
+  "fromDate": "2025-01-01T00:00:00Z",
+  "toDate": "2025-12-31T23:59:59Z",
   "granularity": "MONTHLY"
 }
 ```
@@ -570,8 +581,8 @@ POST /api/superadmin/analytics/query
 **DTO:** `FinancialAnalyticsRequest`
 - `restaurantId` (Long, **OPTIONAL**) - Restaurant ID
 - `branchId` (Long, **OPTIONAL**) - Branch ID
-- `fromDate` (LocalDate, **OPTIONAL**) - Custom range start (inclusive), format: "YYYY-MM-DD"
-- `toDate` (LocalDate, **OPTIONAL**) - Custom range end (inclusive), format: "YYYY-MM-DD"
+- `fromDate` (Instant, **OPTIONAL**) - Custom range start (inclusive), ISO-8601 timestamp string (e.g. `2025-01-01T00:00:00Z`)
+- `toDate` (Instant, **OPTIONAL**) - Custom range end (inclusive), ISO-8601 timestamp string (e.g. `2025-12-31T23:59:59Z`)
 - `granularity` (AnalyticsGranularity, **REQUIRED**, `@NotNull`) - "DAILY", "WEEKLY", or "MONTHLY"
 
 **PATH VARIABLES:** None
@@ -887,6 +898,10 @@ POST /api/branches/{branchId}/assign-admin
   "message": "This branch already has an assigned admin. Please remove the existing admin before assigning a new one."
 }
 ```
+
+**Unassign Admin:** When you need to remove the existing admin mapping altogether, call  
+`DELETE /api/branches/{branchId}/unassign-admin` (no body). Requires `ROLE_SUPERADMIN`.  
+Success response mirrors the structure above with the `adminId` field set to `null`.
 
 ---
 
@@ -1357,25 +1372,17 @@ POST /api/customer/session/start
 
 ---
 
-### 61. End Session
-**ENDPOINT:**
-```
-POST /api/customer/session/end
-```
+### 61. Session API (Internal Staff / POS)
+The platform also exposes a session management API for internal clients at `/api/session`.  
+All endpoints consume/return `SessionRequestDTO` / `SessionResponseDTO` objects unless otherwise noted.
 
-**REQUEST BODY JSON:**
-```json
-{
-  "guestSessionId": "session-uuid-123"
-}
-```
+- `POST /api/session/start` – Create a dining session (used by staff dashboards). Body: `{"branchId":1,"tableId":10,"sessionOwnerId":"optional"}`.
+- `POST /api/session/join` – Idempotently join or create a session for the same table.
+- `PATCH /api/session/close/{sessionId}` – Close an active session (body optional).
+- `GET /api/session/current?tableId={tableId}` – Fetch the active session for a specific table.
+- `GET /api/session/{sessionId}` – Retrieve a session by ID.
 
-**DTO:** `EndSessionRequest` (inner class in CustomerController)
-- `guestSessionId` (String, **REQUIRED**) - Guest session ID
-
-**PATH VARIABLES:** None
-
-**QUERY PARAMS:** None
+All of the above require authenticated staff roles; timestamps are returned as ISO-8601 instants.
 
 ---
 
@@ -1432,11 +1439,214 @@ POST /api/customer/orders
 
 ---
 
+## 🧑‍💼 Admin Operations (`/api/admin`, `/api/admin/orders`, `/api/admins`)
+
+### 64. Get Admin Reports
+**ENDPOINT:**
+```
+GET /api/admin/reports
+```
+Provides aggregate metrics for the authenticated restaurant.  
+**AUTHORIZATION:** `@PreAuthorize("hasRole('SUPERADMIN')")`
+
+---
+
+### 65. Update Admin User
+**ENDPOINT:**
+```
+PUT /api/admins/{adminId}
+```
+**REQUEST BODY:** `UpdateUserRequest`
+- `adminId` path variable represents the admin’s username/email.
+- Follows the same validation rules as the general user update endpoint.
+
+**AUTHORIZATION:** `ROLE_SUPERADMIN`
+
+---
+
+### 66. Delete Admin User
+**ENDPOINT:**
+```
+DELETE /api/admins/{adminId}
+```
+Deletes the specified admin account (username in path). Returns `204 No Content`.  
+**AUTHORIZATION:** `ROLE_SUPERADMIN`
+
+---
+
+### 67. List Restaurant Orders (Admin)
+**ENDPOINT:**
+```
+GET /api/admin/orders
+```
+Returns all orders for the current restaurant as `List<OrderResponseDTO>`.  
+**AUTHORIZATION:** `ROLE_ADMIN` or `ROLE_SUPERADMIN`
+
+---
+
+### 68. Complete Restaurant Order
+**ENDPOINT:**
+```
+POST /api/admin/orders/{orderId}/complete
+```
+Marks the given order as COMPLETED and returns the updated `OrderResponseDTO`.  
+**AUTHORIZATION:** `ROLE_ADMIN` or `ROLE_SUPERADMIN`
+
+---
+
+### 69. Get My Branch Snapshot
+**ENDPOINT:**
+```
+GET /api/admin/branches/my
+```
+Returns `BranchSummaryDTO` for the branch of the logged-in admin.  
+**AUTHORIZATION:** `ROLE_ADMIN` or `ROLE_SUPERADMIN`
+
+---
+
+### 70. Get My Tables Snapshot
+**ENDPOINT:**
+```
+GET /api/admin/tables/my
+```
+Provides `List<TableSummaryDTO>` for the admin’s branch.  
+**AUTHORIZATION:** `ROLE_ADMIN` or `ROLE_SUPERADMIN`
+
+---
+
+### 71. Get My Waiter Roster
+**ENDPOINT:**
+```
+GET /api/admin/waiters/my
+```
+Returns `List<WaiterSummaryDTO>` scoped to the admin’s branch.  
+**AUTHORIZATION:** `ROLE_ADMIN` or `ROLE_SUPERADMIN`
+
+---
+
+### 72. Get Restaurant Menu (Admin Dashboard)
+**ENDPOINT:**
+```
+GET /api/admin/menu
+```
+Delivers the restaurant menu as `List<MenuItemSummaryDTO>` including availability flags.  
+**AUTHORIZATION:** `ROLE_ADMIN` or `ROLE_SUPERADMIN`
+
+---
+
+## 🧑‍🍷 Waiter Operations (`/api/waiter`, `/api/branches/{branchId}/waiters`)
+
+### 73. Waiter Order Feed
+**ENDPOINT:**
+```
+GET /api/waiter/orders
+```
+Returns active orders for the waiter’s branch (falls back to empty list if branch context is missing).  
+**AUTHORIZATION:** `ROLE_WAITER`, `ROLE_ADMIN`, or `ROLE_SUPERADMIN`
+
+---
+
+### 74. Serve Order
+**ENDPOINT:**
+```
+POST /api/waiter/orders/{orderId}/serve
+```
+Transitions the order to `SERVED`. Body not required.  
+**AUTHORIZATION:** `ROLE_WAITER`, `ROLE_ADMIN`, or `ROLE_SUPERADMIN`
+
+---
+
+### 75. Create Branch Waiter
+**ENDPOINT:**
+```
+POST /api/branches/{branchId}/waiters
+```
+**REQUEST BODY:** `CreateUserRequest` (only `email`, `password`, optional contact fields).  
+The controller forces `role=ROLE_WAITER` and `branchId` to match the path.  
+**AUTHORIZATION:** `ROLE_ADMIN` or `ROLE_SUPERADMIN` plus branch permission.
+
+---
+
+### 76. List Waiters for a Branch
+**ENDPOINT:**
+```
+GET /api/branches/{branchId}/waiters
+```
+Lists waiters belonging to the branch as `List<UserDTO>`.  
+**AUTHORIZATION:** `ROLE_ADMIN` or `ROLE_SUPERADMIN` plus branch permission.
+
+---
+
+### 77. Update Waiter
+**ENDPOINT:**
+```
+PUT /api/waiters/{waiterId}
+```
+`waiterId` is the waiter’s username/email. Body is `UpdateUserRequest`.  
+**AUTHORIZATION:** `ROLE_ADMIN` or `ROLE_SUPERADMIN`
+
+---
+
+### 78. Delete Waiter
+**ENDPOINT:**
+```
+DELETE /api/waiters/{waiterId}
+```
+Removes the waiter account identified by username/email.  
+**AUTHORIZATION:** `ROLE_ADMIN` or `ROLE_SUPERADMIN`
+
+---
+
+## 👨‍🍳 Kitchen Operations (`/api/kitchen/orders`)
+
+### 79. Kitchen Active Orders
+**ENDPOINT:**
+```
+GET /api/kitchen/orders
+```
+Returns `List<OrderResponseDTO>` filtered to kitchen-relevant statuses.  
+**AUTHORIZATION:** `ROLE_KITCHEN`, `ROLE_ADMIN`, or `ROLE_SUPERADMIN`
+
+---
+
+### 80. Accept Order (Kitchen)
+**ENDPOINT:**
+```
+POST /api/kitchen/orders/{orderId}/accept
+```
+Moves the order into `PREPARING`.  
+**AUTHORIZATION:** `ROLE_KITCHEN`, `ROLE_ADMIN`, or `ROLE_SUPERADMIN`
+
+---
+
+### 81. Mark Order Ready
+**ENDPOINT:**
+```
+POST /api/kitchen/orders/{orderId}/ready
+```
+Updates the order to `PREPARED_WAITING`.  
+**AUTHORIZATION:** `ROLE_KITCHEN`, `ROLE_ADMIN`, or `ROLE_SUPERADMIN`
+
+---
+
+## 🧾 QR Endpoints (`/api/qr`)
+
+### 82. Generate Table QR (PNG)
+**ENDPOINT:**
+```
+GET /api/qr/{restId}/{tableId}
+```
+Streams a PNG image containing the QR code that points to the customer-facing menu URL for the specified restaurant/table.  
+**RESPONSE:** `Content-Type: image/png` with raw bytes.  
+**AUTHORIZATION:** Authenticated staff account required.
+
+---
+
 ## 🏢 Plateful Admin Endpoints (`/api/plateful-admin`)
 
 **NOTE:** These endpoints are only active when `plateful-admin` profile is enabled.
 
-### 64. Create Restaurant with Superadmin
+### 83. Create Restaurant with Superadmin
 **ENDPOINT:**
 ```
 POST /api/plateful-admin/restaurants
@@ -1470,7 +1680,7 @@ POST /api/plateful-admin/restaurants
 
 ---
 
-### 65. Create Admin for Branch
+### 84. Create Admin for Branch
 **ENDPOINT:**
 ```
 POST /api/plateful-admin/branches/{branchId}/admins
@@ -1503,32 +1713,35 @@ POST /api/plateful-admin/branches/{branchId}/admins
 
 ## 📊 Summary
 
-### Total Endpoints: 65
+### Total Endpoints: 84
 
 ### By Category:
 - **Authentication:** 3 endpoints
 - **User Management:** 8 endpoints
 - **Superadmin Dashboard:** 17 endpoints
 - **Restaurant:** 5 endpoints
-- **Branch:** 6 endpoints
+- **Branch:** 6 endpoints (assign + unassign flows)
 - **Menu:** 6 endpoints
 - **Table:** 5 endpoints
 - **Order:** 8 endpoints
 - **Payment:** 1 endpoint
-- **Customer:** 4 endpoints
+- **Customer (public):** 3 endpoints plus 1 internal session summary
+- **Admin Operations:** 9 endpoints
+- **Waiter Operations:** 6 endpoints
+- **Kitchen Operations:** 3 endpoints
+- **Session API (internal):** 5 operations covered under entry #61
+- **QR:** 1 endpoint
 - **Plateful Admin:** 2 endpoints
 
 ### Key Endpoints for Admin Operations:
 
-1. **Admin Creation:**
-   - `POST /api/superadmin/users` - Create admin user
-   - `POST /api/users` - Create user (general)
-
-2. **Admin Password Reset:**
-   - `POST /api/superadmin/admins/{adminId}/reset-password` - Reset admin password
-
-3. **Branch Assignment:**
-   - `POST /api/branches/{branchId}/assign-admin` - Assign admin to branch
+1. **Admin & Waiter Lifecycle:**
+   - `POST /api/superadmin/users`, `POST /api/users`, `POST /api/branches/{branchId}/waiters`, `PUT/DELETE /api/waiters/{waiterId}`
+2. **Operational Dashboards:**
+   - `GET /api/admin/reports`, `/api/admin/branches/my`, `/api/admin/tables/my`, `/api/admin/waiters/my`, `/api/admin/menu`
+3. **Access & Security:**
+   - `POST /api/superadmin/admins/{adminId}/reset-password`
+   - `POST /api/branches/{branchId}/assign-admin` and `DELETE /api/branches/{branchId}/unassign-admin`
 
 ---
 
@@ -1549,7 +1762,7 @@ POST /api/plateful-admin/branches/{branchId}/admins
 - **Integer** - Small integers (quantities, counts)
 - **BigDecimal** - Decimal numbers (salaries, prices)
 - **Boolean** - True/false values
-- **LocalDate** - Date values (format: "YYYY-MM-DD")
+- **Instant** - UTC timestamps (ISO-8601, e.g. `2025-01-01T00:00:00Z`)
 - **Enum** - Predefined values (SalaryPeriod, AnalyticsGranularity, OrderStatus)
 
 ---

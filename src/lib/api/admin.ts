@@ -5,6 +5,8 @@ export interface StaffCreatePayload {
   email: string;
   role: 'ROLE_WAITER' | 'ROLE_KITCHEN';
   password?: string;
+  firstName?: string;
+  lastName?: string;
   phoneNumber?: string;
   salaryAmount?: number;
   salaryPeriod?: 'DAILY' | 'WEEKLY' | 'MONTHLY';
@@ -13,6 +15,12 @@ export interface StaffCreatePayload {
 export interface StaffUpdatePayload {
   role?: 'ROLE_WAITER' | 'ROLE_KITCHEN';
   password?: string;
+  firstName?: string;
+  lastName?: string;
+  phoneNumber?: string;
+  salaryAmount?: number;
+  salaryPeriod?: 'DAILY' | 'WEEKLY' | 'MONTHLY';
+  branchId?: number;
 }
 
 export interface TablePayload {
@@ -52,6 +60,17 @@ export const createStaff = async (
   if (payload.password) {
     body.password = payload.password;
   }
+  // Name fields - backend expects fullName, not firstName/lastName separately
+  if (payload.firstName?.trim() || payload.lastName?.trim()) {
+    const firstName = payload.firstName?.trim() || '';
+    const lastName = payload.lastName?.trim() || '';
+    body.fullName = `${firstName} ${lastName}`.trim();
+    console.log('[createStaff] Sending name fields:', {
+      firstName: payload.firstName,
+      lastName: payload.lastName,
+      fullName: body.fullName,
+    });
+  }
   // Required fields for staff members
   if (payload.phoneNumber !== undefined && payload.phoneNumber !== null) {
     body.phoneNumber = payload.phoneNumber;
@@ -63,7 +82,24 @@ export const createStaff = async (
   if (payload.salaryPeriod !== undefined && payload.salaryPeriod !== null) {
     body.salaryPeriod = payload.salaryPeriod;
   }
+  
+  console.log('[createStaff] Complete request body being sent to backend:', JSON.stringify(body, null, 2));
+  
   const { data } = await api.post<UserRecord>('/users', body);
+  
+  console.log('[createStaff] Response from backend:', {
+    id: data.id,
+    email: data.email,
+    fullName: data.fullName,
+    firstName: data.firstName,
+    lastName: data.lastName,
+    phone: data.phone,
+    phoneNumber: data.phoneNumber,
+    salaryAmount: data.salaryAmount,
+    salaryPeriod: data.salaryPeriod,
+    allKeys: Object.keys(data),
+  });
+  
   return data;
 };
 
@@ -72,11 +108,65 @@ export const updateStaff = async (
   email: string,
   payload: StaffUpdatePayload
 ) => {
-  const { data } = await api.patch<UserRecord>(`/users/${encodeURIComponent(email.toLowerCase())}`, {
-    ...(payload.role ? { role: payload.role } : {}),
-    ...(payload.password ? { password: payload.password } : {}),
+  const body: Record<string, unknown> = {};
+  
+  if (payload.role) {
+    body.role = payload.role;
+  }
+  if (payload.password) {
+    body.password = payload.password;
+  }
+  // Name fields - backend supports both fullName and firstName/lastName
+  // According to API docs: server derives fullName when both firstName/lastName are provided
+  // We'll send firstName/lastName separately to let backend handle it, or fullName if only one is provided
+  if (payload.firstName !== undefined || payload.lastName !== undefined) {
+    const firstName = payload.firstName?.trim() || '';
+    const lastName = payload.lastName?.trim() || '';
+    // Send both fields separately - backend will derive fullName automatically
+    if (firstName) {
+      body.firstName = firstName;
+    }
+    if (lastName) {
+      body.lastName = lastName;
+    }
+    // Also send fullName as fallback (backend accepts either approach)
+    if (firstName || lastName) {
+      body.fullName = `${firstName} ${lastName}`.trim();
+    }
+  }
+  if (payload.phoneNumber !== undefined && payload.phoneNumber !== null) {
+    body.phoneNumber = payload.phoneNumber;
+  }
+  if (payload.salaryAmount !== undefined && payload.salaryAmount !== null) {
+    body.salaryAmount = Number(payload.salaryAmount);
+  }
+  if (payload.salaryPeriod !== undefined && payload.salaryPeriod !== null) {
+    body.salaryPeriod = payload.salaryPeriod;
+  }
+  if (payload.branchId !== undefined && payload.branchId !== null) {
+    body.branchId = payload.branchId;
+  }
+  
+  console.log('[updateStaff] Sending update request:', {
+    email: email.toLowerCase(),
+    url: `/users/${encodeURIComponent(email.toLowerCase())}`,
+    body: JSON.stringify(body, null, 2),
   });
-  return data;
+  
+  try {
+    const { data } = await api.patch<UserRecord>(`/users/${encodeURIComponent(email.toLowerCase())}`, body);
+    console.log('[updateStaff] Update successful:', data);
+    return data;
+  } catch (error: any) {
+    console.error('[updateStaff] Update failed:', {
+      status: error?.response?.status,
+      statusText: error?.response?.statusText,
+      data: error?.response?.data,
+      message: error?.message,
+      requestBody: body,
+    });
+    throw error;
+  }
 };
 
 export const deleteStaff = async (api: AxiosInstance, email: string) => {

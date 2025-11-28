@@ -43,7 +43,7 @@ export function ProtectedLayout({ allowedRoles, children }: ProtectedLayoutProps
   return (
     <div className="flex min-h-screen bg-slate-100">
       <Sidebar />
-      <main className="flex-1 overflow-y-auto px-8 py-8">{children}</main>
+      <main className="flex-1 overflow-y-auto pl-72 px-8 py-8">{children}</main>
     </div>
   );
 }

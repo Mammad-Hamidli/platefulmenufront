@@ -21,7 +21,12 @@ export interface UserRecord {
   restaurantId: number;
   branchId: number | null;
   fullName?: string | null;
+  firstName?: string | null;
+  lastName?: string | null;
   phone?: string | null;
+  phoneNumber?: string | null;
+  salaryAmount?: number | null;
+  salaryPeriod?: 'DAILY' | 'WEEKLY' | 'MONTHLY' | null;
 }
 
 export interface MenuItem {

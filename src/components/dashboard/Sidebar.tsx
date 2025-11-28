@@ -39,7 +39,7 @@ export function Sidebar() {
   const links = NAV_LINKS[user.role] ?? [];
 
   return (
-    <aside className="flex w-72 flex-col gap-6 border-r border-slate-200 bg-white px-4 py-6">
+    <aside className="fixed left-0 top-0 z-10 flex h-screen w-72 flex-col gap-6 overflow-y-auto border-r border-slate-200 bg-white px-4 py-6">
       <div>
         <p className="text-xs uppercase tracking-wide text-slate-400">Signed in as</p>
         <p className="mt-1 text-lg font-semibold text-slate-900">{user.email}</p>

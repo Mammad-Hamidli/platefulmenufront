@@ -6,7 +6,7 @@ const DASHBOARD_MAP: Record<string, string> = {
   ROLE_ADMIN: '/dashboard/admin',
 };
 
-const PUBLIC_PATHS = ['/login', '/api/auth/login', '/api/auth/session'];
+const PUBLIC_PATHS = ['/login', '/api/auth/login', '/api/auth/session', '/table'];
 
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
