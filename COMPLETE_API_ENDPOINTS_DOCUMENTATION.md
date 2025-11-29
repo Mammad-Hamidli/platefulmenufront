@@ -1597,41 +1597,337 @@ Removes the waiter account identified by username/email.
 
 ---
 
-## 👨‍🍳 Kitchen Operations (`/api/kitchen/orders`)
+## 👨‍🍳 Kitchen Operations (`/api/branches/{branchId}/kitchen/orders`)
 
-### 79. Kitchen Active Orders
+**MULTI-TENANT ARCHITECTURE:** All kitchen operations are now branch-scoped to enforce tenant isolation. Each branch can only access orders belonging to that branch. `ROLE_SUPERADMIN` can access any branch, while `ROLE_KITCHEN` and `ROLE_ADMIN` are restricted to their assigned branch.
+
+**DUAL AUTHENTICATION:** Kitchen endpoints support two authentication methods:
+1. **JWT-based (existing):** User with `ROLE_KITCHEN`, `ROLE_ADMIN`, or `ROLE_SUPERADMIN` + correct branch
+2. **KDS token-based (new):** Valid, non-expired KDS token for the branch (sent via `X-KDS-Token` header)
+
+KDS tokens are obtained by verifying the branch's 6-digit Kitchen PIN (see Kitchen PIN Management endpoints below).
+
+### 79. Kitchen Active Orders (Branch-Scoped) ⭐
+**ENDPOINT:**
+```
+GET /api/branches/{branchId}/kitchen/orders
+```
+
+**PATH VARIABLES:**
+- `branchId` (Long, **REQUIRED**) - Branch ID
+
+**REQUEST BODY JSON:** None
+
+**QUERY PARAMS:** None
+
+**RESPONSE:** 
+- **Success (200 OK):** `List<OrderResponseDTO>` filtered to kitchen-relevant statuses (ORDERED, PREPARING, PREPARED_WAITING) for the specified branch.
+- **PIN Required (401 Unauthorized):** `KitchenAuthRequiredResponse` when no authentication is provided:
+  ```json
+  {
+    "requiresPin": true,
+    "message": "PIN authentication required",
+    "branchId": 1763914140416
+  }
+  ```
+  This response indicates that the frontend should display a PIN entry screen. After the user enters the correct PIN, the frontend should call `POST /api/branches/{branchId}/kitchen/pin/verify` to obtain a KDS token, then retry this endpoint with the `X-KDS-Token` header.
+
+**HEADERS:**
+- `Authorization: Bearer <jwt_token>` (optional) - JWT token for authenticated users
+- `X-KDS-Token: <kds_token>` (optional) - KDS token for kitchen device sessions
+
+**AUTHORIZATION:** Either:
+- JWT: `ROLE_KITCHEN`, `ROLE_ADMIN`, or `ROLE_SUPERADMIN` with matching branch
+- KDS Token: Valid, non-expired KDS token for the specified branch
+- **No Authentication:** Returns `401 Unauthorized` with `KitchenAuthRequiredResponse` (frontend should show PIN entry screen)
+
+**TENANT ISOLATION:**
+- `ROLE_KITCHEN` and `ROLE_ADMIN` can only access orders from their own branch (branchId from JWT must match path variable).
+- `ROLE_SUPERADMIN` can access any branch.
+- If a user tries to access another branch's orders, returns `403 Forbidden` with message: "You cannot access another branch's kitchen."
+
+**USAGE FLOW FOR KITCHEN DEVICES:**
+1. Device opens URL: `GET /api/branches/{branchId}/kitchen/orders` (no auth)
+2. Backend returns `401` with `KitchenAuthRequiredResponse` → Frontend shows PIN entry screen
+3. User enters PIN → Frontend calls `POST /api/branches/{branchId}/kitchen/pin/verify` with PIN
+4. Backend returns KDS token → Frontend stores token (e.g., localStorage)
+5. Frontend retries `GET /api/branches/{branchId}/kitchen/orders` with `X-KDS-Token` header
+6. Backend returns orders list → Frontend displays orders
+
+---
+
+### 80. Accept Order (Branch-Scoped) ⭐
+**ENDPOINT:**
+```
+POST /api/branches/{branchId}/kitchen/orders/{orderId}/accept
+```
+
+**PATH VARIABLES:**
+- `branchId` (Long, **REQUIRED**) - Branch ID
+- `orderId` (Long, **REQUIRED**) - Order ID
+
+**REQUEST BODY JSON:** None
+
+**QUERY PARAMS:** None
+
+**RESPONSE:** `OrderResponseDTO` with status updated to `PREPARING`.
+
+**HEADERS:**
+- `Authorization: Bearer <jwt_token>` (optional) - JWT token for authenticated users
+- `X-KDS-Token: <kds_token>` (optional) - KDS token for kitchen device sessions
+
+**AUTHORIZATION:** Either:
+- JWT: `ROLE_KITCHEN`, `ROLE_ADMIN`, or `ROLE_SUPERADMIN` with matching branch
+- KDS Token: Valid, non-expired KDS token for the specified branch
+
+**TENANT ISOLATION:**
+- Validates that the order belongs to the specified branch before accepting.
+- `ROLE_KITCHEN` and `ROLE_ADMIN` can only accept orders from their own branch.
+- `ROLE_SUPERADMIN` can accept orders from any branch.
+- If order belongs to a different branch, returns `403 Forbidden`: "You cannot access another branch's kitchen."
+- If order not found, returns `404 Not Found`.
+
+---
+
+### 81. Mark Order Ready (Branch-Scoped) ⭐
+**ENDPOINT:**
+```
+POST /api/branches/{branchId}/kitchen/orders/{orderId}/ready
+```
+
+**PATH VARIABLES:**
+- `branchId` (Long, **REQUIRED**) - Branch ID
+- `orderId` (Long, **REQUIRED**) - Order ID
+
+**REQUEST BODY JSON:** None
+
+**QUERY PARAMS:** None
+
+**RESPONSE:** `OrderResponseDTO` with status updated to `PREPARED_WAITING`.
+
+**HEADERS:**
+- `Authorization: Bearer <jwt_token>` (optional) - JWT token for authenticated users
+- `X-KDS-Token: <kds_token>` (optional) - KDS token for kitchen device sessions
+
+**AUTHORIZATION:** Either:
+- JWT: `ROLE_KITCHEN`, `ROLE_ADMIN`, or `ROLE_SUPERADMIN` with matching branch
+- KDS Token: Valid, non-expired KDS token for the specified branch
+
+**TENANT ISOLATION:**
+- Validates that the order belongs to the specified branch before marking as ready.
+- `ROLE_KITCHEN` and `ROLE_ADMIN` can only mark orders ready from their own branch.
+- `ROLE_SUPERADMIN` can mark orders ready from any branch.
+- If order belongs to a different branch, returns `403 Forbidden`: "You cannot access another branch's kitchen."
+- If order not found, returns `404 Not Found`.
+
+---
+
+## 🔐 Kitchen PIN Management (`/api/branches/{branchId}/kitchen/pin`)
+
+**SECURITY:** Each branch has its own 6-digit Kitchen PIN for device authentication. PINs are stored as BCrypt hashes and never exposed in plain text (except once during generation).
+
+### 88. Get Kitchen PIN Info ⭐
+**ENDPOINT:**
+```
+GET /api/branches/{branchId}/kitchen/pin
+```
+
+**PATH VARIABLES:**
+- `branchId` (Long, **REQUIRED**) - Branch ID
+
+**REQUEST BODY JSON:** None
+
+**QUERY PARAMS:** None
+
+**RESPONSE:** `KitchenPinInfoDTO`
+```json
+{
+  "branchId": 123,
+  "isSet": true,
+  "lastUpdatedAt": "2025-01-01T12:00:00Z",
+  "maskedPin": "••••••",
+  "pin": null
+}
+```
+
+**AUTHORIZATION:** `ROLE_ADMIN` or `ROLE_SUPERADMIN`
+- `ROLE_ADMIN` can only view PIN info for their own branch
+- `ROLE_SUPERADMIN` can view PIN info for any branch
+
+**NOTE:** Full PIN is never returned in this endpoint. Use generate endpoint to see full PIN once.
+
+---
+
+### 89. Set Kitchen PIN Manually ⭐
+**ENDPOINT:**
+```
+POST /api/branches/{branchId}/kitchen/pin
+```
+
+**PATH VARIABLES:**
+- `branchId` (Long, **REQUIRED**) - Branch ID
+
+**REQUEST BODY JSON:**
+```json
+{
+  "pin": "123456"
+}
+```
+
+**DTO:** `SetPinRequest`
+- `pin` (String, **REQUIRED**, `@NotBlank`, `@Pattern("^[0-9]{6}$")`) - Exactly 6 numeric digits
+
+**QUERY PARAMS:** None
+
+**RESPONSE:** `KitchenPinInfoDTO` (masked, full PIN not returned)
+
+**AUTHORIZATION:** `ROLE_ADMIN` or `ROLE_SUPERADMIN`
+- `ROLE_ADMIN` can only set PIN for their own branch
+- `ROLE_SUPERADMIN` can set PIN for any branch
+
+**VALIDATION:**
+- PIN must be exactly 6 digits
+- PIN must contain only numeric characters (0-9)
+
+---
+
+### 90. Generate Random Kitchen PIN ⭐
+**ENDPOINT:**
+```
+POST /api/branches/{branchId}/kitchen/pin/generate
+```
+
+**PATH VARIABLES:**
+- `branchId` (Long, **REQUIRED**) - Branch ID
+
+**REQUEST BODY JSON:** None
+
+**QUERY PARAMS:** None
+
+**RESPONSE:** `KitchenPinInfoDTO` with full PIN included (ONLY time full PIN is returned)
+```json
+{
+  "branchId": 123,
+  "isSet": true,
+  "lastUpdatedAt": "2025-01-01T12:00:00Z",
+  "maskedPin": "••••••",
+  "pin": "348921"
+}
+```
+
+**AUTHORIZATION:** `ROLE_ADMIN` or `ROLE_SUPERADMIN`
+- `ROLE_ADMIN` can only generate PIN for their own branch
+- `ROLE_SUPERADMIN` can generate PIN for any branch
+
+**IMPORTANT:** The full PIN is returned ONLY in this response. Admin should note it down immediately. Subsequent calls to get PIN info will only return masked PIN.
+
+---
+
+### 91. Verify Kitchen PIN and Get KDS Token ⭐
+**ENDPOINT:**
+```
+POST /api/branches/{branchId}/kitchen/pin/verify
+```
+
+**PATH VARIABLES:**
+- `branchId` (Long, **REQUIRED**) - Branch ID
+
+**REQUEST BODY JSON:**
+```json
+{
+  "pin": "123456"
+}
+```
+
+**DTO:** `VerifyPinRequest`
+- `pin` (String, **REQUIRED**, `@NotBlank`, `@Pattern("^[0-9]{6}$")`) - Exactly 6 numeric digits
+
+**QUERY PARAMS:** None
+
+**RESPONSE:** `KdsLoginResponseDTO`
+```json
+{
+  "branchId": 123,
+  "kdsToken": "550e8400-e29b-41d4-a716-446655440000",
+  "expiresAt": "2025-01-01T23:00:00Z"
+}
+```
+
+**AUTHORIZATION:** None (public endpoint - no JWT required)
+
+**USAGE:**
+- Used by kitchen devices (tablets) for initial authentication
+- On success, device stores `kdsToken` (e.g., in localStorage) and sends it in `X-KDS-Token` header for subsequent requests
+- Session expires after 12 hours
+
+**ERROR RESPONSES:**
+- `401 Unauthorized` - Invalid PIN (generic message to avoid leaking whether PIN is set)
+- `400 Bad Request` - Invalid PIN format
+- `404 Not Found` - Branch not found
+
+**SECURITY NOTES:**
+- PIN is verified against BCrypt hash
+- Generic error messages prevent PIN enumeration attacks
+- KDS tokens are branch-specific and expire after 12 hours
+- Rate limiting recommended (implemented in memory for brute-force mitigation)
+
+---
+
+## 👨‍🍳 Kitchen Operations (Deprecated - Legacy Endpoints)
+
+**⚠️ DEPRECATED:** The following endpoints are retained for backward compatibility but are deprecated. Use the branch-scoped endpoints above (`/api/branches/{branchId}/kitchen/...`) instead.
+
+### 82. Kitchen Active Orders (Deprecated)
 **ENDPOINT:**
 ```
 GET /api/kitchen/orders
 ```
-Returns `List<OrderResponseDTO>` filtered to kitchen-relevant statuses.  
+**STATUS:** `@Deprecated` - Use `GET /api/branches/{branchId}/kitchen/orders` instead.
+
+Returns `List<OrderResponseDTO>` filtered to kitchen-relevant statuses for the authenticated user's branch (extracted from JWT).  
 **AUTHORIZATION:** `ROLE_KITCHEN`, `ROLE_ADMIN`, or `ROLE_SUPERADMIN`
+
+**NOTE:** This endpoint automatically resolves the branch from the JWT token. For explicit branch control, use the branch-scoped endpoint.
 
 ---
 
-### 80. Accept Order (Kitchen)
+### 83. Accept Order (Deprecated)
 **ENDPOINT:**
 ```
 POST /api/kitchen/orders/{orderId}/accept
 ```
-Moves the order into `PREPARING`.  
+**STATUS:** `@Deprecated` - Use `POST /api/branches/{branchId}/kitchen/orders/{orderId}/accept` instead.
+
+Moves the order into `PREPARING`. The branch is automatically resolved from the JWT token.  
 **AUTHORIZATION:** `ROLE_KITCHEN`, `ROLE_ADMIN`, or `ROLE_SUPERADMIN`
+
+**PATH VARIABLES:**
+- `orderId` (Long, **REQUIRED**) - Order ID
+
+**NOTE:** This endpoint automatically resolves the branch from the JWT token. For explicit branch control, use the branch-scoped endpoint.
 
 ---
 
-### 81. Mark Order Ready
+### 84. Mark Order Ready (Deprecated)
 **ENDPOINT:**
 ```
 POST /api/kitchen/orders/{orderId}/ready
 ```
-Updates the order to `PREPARED_WAITING`.  
+**STATUS:** `@Deprecated` - Use `POST /api/branches/{branchId}/kitchen/orders/{orderId}/ready` instead.
+
+Updates the order to `PREPARED_WAITING`. The branch is automatically resolved from the JWT token.  
 **AUTHORIZATION:** `ROLE_KITCHEN`, `ROLE_ADMIN`, or `ROLE_SUPERADMIN`
+
+**PATH VARIABLES:**
+- `orderId` (Long, **REQUIRED**) - Order ID
+
+**NOTE:** This endpoint automatically resolves the branch from the JWT token. For explicit branch control, use the branch-scoped endpoint.
 
 ---
 
 ## 🧾 QR Endpoints (`/api/qr`)
 
-### 82. Generate Table QR (PNG)
+### 92. Generate Table QR (PNG)
 **ENDPOINT:**
 ```
 GET /api/qr/{restId}/{tableId}
@@ -1646,7 +1942,7 @@ Streams a PNG image containing the QR code that points to the customer-facing me
 
 **NOTE:** These endpoints are only active when `plateful-admin` profile is enabled.
 
-### 83. Create Restaurant with Superadmin
+### 93. Create Restaurant with Superadmin
 **ENDPOINT:**
 ```
 POST /api/plateful-admin/restaurants
@@ -1680,7 +1976,7 @@ POST /api/plateful-admin/restaurants
 
 ---
 
-### 84. Create Admin for Branch
+### 94. Create Admin for Branch
 **ENDPOINT:**
 ```
 POST /api/plateful-admin/branches/{branchId}/admins
@@ -1713,7 +2009,7 @@ POST /api/plateful-admin/branches/{branchId}/admins
 
 ## 📊 Summary
 
-### Total Endpoints: 84
+### Total Endpoints: 91
 
 ### By Category:
 - **Authentication:** 3 endpoints
@@ -1728,7 +2024,8 @@ POST /api/plateful-admin/branches/{branchId}/admins
 - **Customer (public):** 3 endpoints plus 1 internal session summary
 - **Admin Operations:** 9 endpoints
 - **Waiter Operations:** 6 endpoints
-- **Kitchen Operations:** 3 endpoints
+- **Kitchen Operations:** 6 endpoints (3 branch-scoped + 3 deprecated legacy)
+- **Kitchen PIN Management:** 4 endpoints (PIN info, set, generate, verify)
 - **Session API (internal):** 5 operations covered under entry #61
 - **QR:** 1 endpoint
 - **Plateful Admin:** 2 endpoints
@@ -1742,6 +2039,28 @@ POST /api/plateful-admin/branches/{branchId}/admins
 3. **Access & Security:**
    - `POST /api/superadmin/admins/{adminId}/reset-password`
    - `POST /api/branches/{branchId}/assign-admin` and `DELETE /api/branches/{branchId}/unassign-admin`
+
+### Key Endpoints for Kitchen Operations:
+
+1. **Branch-Scoped Kitchen Endpoints (Recommended):**
+   - `GET /api/branches/{branchId}/kitchen/orders` - View active orders for a specific branch
+   - `POST /api/branches/{branchId}/kitchen/orders/{orderId}/accept` - Accept order (ORDERED → PREPARING)
+   - `POST /api/branches/{branchId}/kitchen/orders/{orderId}/ready` - Mark order ready (PREPARING → PREPARED_WAITING)
+2. **Kitchen PIN Management (Device Authentication):**
+   - `GET /api/branches/{branchId}/kitchen/pin` - View PIN info (masked) - ADMIN/SUPERADMIN only
+   - `POST /api/branches/{branchId}/kitchen/pin` - Set PIN manually - ADMIN/SUPERADMIN only
+   - `POST /api/branches/{branchId}/kitchen/pin/generate` - Generate random PIN - ADMIN/SUPERADMIN only
+   - `POST /api/branches/{branchId}/kitchen/pin/verify` - Verify PIN and get KDS token (public, no JWT)
+3. **Dual Authentication:**
+   - Kitchen endpoints support both JWT (existing) and KDS token (new) authentication
+   - KDS tokens obtained via PIN verification, valid for 12 hours
+   - Send KDS token in `X-KDS-Token` header for kitchen device sessions
+4. **Tenant Isolation:**
+   - All kitchen endpoints enforce branch-level access control
+   - `ROLE_KITCHEN` and `ROLE_ADMIN` can only access their assigned branch
+   - `ROLE_SUPERADMIN` can access any branch
+   - KDS tokens are branch-specific and cannot access other branches
+   - Legacy endpoints (`/api/kitchen/orders`) are deprecated but still functional for backward compatibility
 
 ---
 

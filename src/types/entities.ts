@@ -50,3 +50,30 @@ export interface TableEntity {
   qrCode: string | null;
 }
 
+export type OrderStatus = 'ORDERED' | 'PREPARING' | 'PREPARED_WAITING' | 'SERVED' | 'COMPLETED' | 'CANCELLED';
+
+export interface OrderItem {
+  id?: number;
+  menuItemId: number;
+  qty: number;
+  priceCents?: number | null;
+  menuItemName?: string | null;
+  notes?: string | null;
+}
+
+export interface Order {
+  id: number;
+  restaurantId: number;
+  branchId: number;
+  tableId: number;
+  tableName?: string | null;
+  guestSessionId?: string | null;
+  customerId?: string | null;
+  status: OrderStatus;
+  items: OrderItem[];
+  totalCents?: number | null;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+  notes?: string | null;
+}
+

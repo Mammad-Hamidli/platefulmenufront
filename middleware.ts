@@ -6,7 +6,7 @@ const DASHBOARD_MAP: Record<string, string> = {
   ROLE_ADMIN: '/dashboard/admin',
 };
 
-const PUBLIC_PATHS = ['/login', '/api/auth/login', '/api/auth/session', '/table'];
+const PUBLIC_PATHS = ['/login', '/api/auth/login', '/api/auth/session', '/table', '/kitchen'];
 
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
@@ -42,5 +42,7 @@ export function middleware(request: NextRequest) {
 
 export const config = {
   matcher: ['/dashboard/:path*', '/login', '/'],
+  // Note: /kitchen/* routes are intentionally excluded from middleware
+  // They use KDS token authentication only, not JWT
 };
 

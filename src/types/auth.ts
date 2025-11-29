@@ -1,4 +1,4 @@
-export type UserRole = 'ROLE_SUPERADMIN' | 'ROLE_ADMIN' | 'ROLE_WAITER';
+export type UserRole = 'ROLE_SUPERADMIN' | 'ROLE_ADMIN' | 'ROLE_WAITER' | 'ROLE_KITCHEN';
 
 export interface AuthUser {
   id: number;
